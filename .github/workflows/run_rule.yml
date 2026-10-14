@@ -1,0 +1,248 @@
+name: Build_Rules
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 13 * * *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Set variables
+        run: |
+          printf "GOAMD64=v3\n" >> $GITHUB_ENV
+          printf "BUILDTIME=%s\n" "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M')" >> $GITHUB_ENV
+          printf "CHINA_DOMAINS_URL=https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMax/ChinaMax_Domain.txt\n" >> $GITHUB_ENV
+          printf "GOOGLE_DOMAINS_URL=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf\n" >> $GITHUB_ENV
+          printf "APPLE_DOMAINS_URL=https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/apple.china.conf\n" >> $GITHUB_ENV
+          printf "CUSTOM_PROXY=https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/geolocation-!cn.txt\n" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Checkout the current repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Loyalsoldier/domain-list-custom
+        uses: actions/checkout@v4
+        with:
+          repository: Loyalsoldier/domain-list-custom
+          path: custom
+
+      - name: Checkout v2fly/domain-list-community
+        uses: actions/checkout@v4
+        with:
+          repository: v2fly/domain-list-community
+          path: community
+
+      - name: Checkout cokebar/gfwlist2dnsmasq
+        uses: actions/checkout@v4
+        with:
+          repository: cokebar/gfwlist2dnsmasq
+          path: gfwlist2dnsmasq
+
+      - name: Checkout xishang0128/geoip
+        uses: actions/checkout@v4
+        with:
+          repository: xishang0128/geoip
+          path: geoip-src
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: ./custom/go.sum
+
+      - name: Generate GFWList domains
+        run: |
+          cd gfwlist2dnsmasq || exit 1
+          chmod +x ./gfwlist2dnsmasq.sh
+          ./gfwlist2dnsmasq.sh -l -o ./temp-gfwlist.txt || exit 1
+
+      - name: Get and add direct domains into temp-direct.txt file
+        run: |
+          curl -sSL $CHINA_DOMAINS_URL | sed '/^\s*#/d' | sed '/^[^\.]/ s/^/full:/' | sed 's/^\.\([^.]*\)/\1/' > temp-direct.txt || exit 1
+
+      - name: Get and add proxy domains into temp-proxy.txt file
+        run: |
+          cat ./gfwlist2dnsmasq/temp-gfwlist.txt | perl -ne '/^((?=^.{3,255})[a-zA-Z0-9][-_a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-_a-zA-Z0-9]{0,62})+)/ && print "$1\n"' > temp-proxy.txt
+          curl -sSL $GOOGLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "$1\n"' >> temp-proxy.txt
+          curl -sSL $APPLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "$1\n"' >> temp-proxy.txt
+          curl -sSL $CUSTOM_PROXY | grep -Ev ":@cn" | perl -ne '/^(domain):([^:]+)(\n$|:@.+)/ && print "$2\n"' >> temp-proxy.txt
+
+      - name: Reserve full, regexp and keyword type of rules from custom lists to reserve files
+        run: |
+          curl -sSL $CUSTOM_PROXY | grep -Ev ":@cn" | perl -ne '/^((full|regexp|keyword):[^:]+)(\n$|:@.+)/ && print "$1\n"' | sort --ignore-case -u > proxy-reserve.txt
+
+      - name: Add proxy and direct domains from hidden branch if exists
+        run: |
+          [ -f "./resouces/proxy.txt" ] && cat ./resouces/proxy.txt >> temp-proxy.txt
+          [ -f "./resouces/direct.txt" ] && cat ./resouces/direct.txt >> temp-direct.txt
+
+      - name: Sort and generate redundant lists
+        run: |
+          cat temp-proxy.txt | sort --ignore-case -u > proxy-list-with-redundant
+          cat temp-direct.txt | sort --ignore-case -u > direct-list-with-redundant
+
+      - name: Remove redundant domains
+        run: |
+          chmod +x ./resouces/*.py || true
+          if [ -f "./resouces/findRedundantDomain.py" ]; then
+            python ./resouces/findRedundantDomain.py ./direct-list-with-redundant ./direct-list-deleted-unsort || exit 1
+            python ./resouces/findRedundantDomain.py ./proxy-list-with-redundant ./proxy-list-deleted-unsort || exit 1
+          fi
+          [ ! -f "direct-list-deleted-unsort" ] && touch direct-list-deleted-unsort
+          [ ! -f "proxy-list-deleted-unsort" ] && touch proxy-list-deleted-unsort
+          sort ./direct-list-deleted-unsort > ./direct-list-deleted-sort
+          sort ./proxy-list-deleted-unsort > ./proxy-list-deleted-sort
+          if [ -f "./resouces/removeFrom.py" ]; then
+            python ./resouces/removeFrom.py -remove ./direct-list-deleted-sort -from ./direct-list-with-redundant -out direct-list-without-redundant || exit 1
+            python ./resouces/removeFrom.py -remove ./proxy-list-deleted-sort -from ./proxy-list-with-redundant -out proxy-list-without-redundant || exit 1
+          else
+            cp direct-list-with-redundant direct-list-without-redundant
+            cp proxy-list-with-redundant proxy-list-without-redundant
+          fi
+
+      - name: Remove domains from need-to-remove lists if exists
+        run: |
+          if [ -f "./resouces/direct-need-to-remove.txt" ]; then
+            python ./resouces/removeFrom.py -remove ./resouces/direct-need-to-remove.txt -from ./direct-list-without-redundant -out ./temp-cn.txt || exit 1
+          else
+            cp direct-list-without-redundant ./temp-cn.txt
+          fi
+          if [ -f "./resouces/proxy-need-to-remove.txt" ]; then
+            python ./resouces/removeFrom.py -remove ./resouces/proxy-need-to-remove.txt -from ./proxy-list-without-redundant -out ./temp-geolocation-\!cn.txt || exit 1
+          else
+            cp proxy-list-without-redundant ./temp-geolocation-\!cn.txt
+          fi
+
+      - name: Write lists to community data directory
+        run: |
+          cat temp-cn.txt | grep -v google | grep -v manhua | grep -v ooklaserver | grep -v "acg.rip" | sort --ignore-case -u | perl -ne '/^((?=^.{1,255})[a-zA-Z0-9][-_a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-_a-zA-Z0-9]{0,62})*)/ && print "$1\n"' > ./community/data/cn
+          cat temp-geolocation-\!cn.txt | sort --ignore-case -u | perl -ne '/^((?=^.{1,255})[a-zA-Z0-9][-_a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-_a-zA-Z0-9]{0,62})*)/ && print "$1\n"' | perl -ne 'print if not /\.cn$/' > ./community/data/geolocation-\!cn
+
+      - name: Add full, regexp and keyword type of rules back into lists
+        run: |
+          [ -f "direct-reserve.txt" ] && cat direct-reserve.txt >> ./community/data/cn
+          [ -f "proxy-reserve.txt" ] && cat proxy-reserve.txt >> ./community/data/geolocation-\!cn
+
+      - name: Create google-cn, apple-cn, gfw lists
+        run: |
+          curl -sSL $GOOGLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "full:$1\n"' > ./community/data/google-cn
+          curl -sSL $APPLE_DOMAINS_URL | perl -ne '/^server=\/([^\/]+)\// && print "full:$1\n"' > ./community/data/apple-cn
+          cat ./gfwlist2dnsmasq/temp-gfwlist.txt | perl -ne '/^((?=^.{3,255})[a-zA-Z0-9][-_a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-_a-zA-Z0-9]{0,62})+)/ && print "$1\n"' >> ./community/data/gfw
+
+      - name: Generate ad_site (adblock domain lists)
+        run: |
+          echo "Generating ad_site..."
+          > ./community/data/ad_site
+
+          urls=(
+            "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt"
+            "https://raw.githubusercontent.com/217heidai/adblockfilters/main/rules/adblockdomain.txt"
+            "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.txt"
+            "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/ultimate.txt"
+            "https://raw.githubusercontent.com/ppfeufer/adguard-filter-list/master/blocklist"
+            "https://raw.githubusercontent.com/badmojr/1Hosts/master/Xtra/adblock.txt"
+          )
+
+          for url in "${urls[@]}"; do
+            curl -sSL "$url" | \
+              grep -v '^!' | grep -v '^#' | grep -v '^@@' | \
+              sed 's/^||//' | sed 's/\^$//' | sed 's/\^.*$//' | \
+              sed 's/[#\/].*//' | tr -d '\r' | \
+              perl -ne '/^((?=^.{3,255})[a-zA-Z0-9][-_a-zA-Z0-9]{0,62}(\.[a-zA-Z0-9][-_a-zA-Z0-9]{0,62})+)/ && print "$1\n"' >> ./community/data/ad_site || exit 1
+          done
+
+          sort -u ./community/data/ad_site | sed '/^$/d' > ./community/data/ad_site_cleaned
+          mv ./community/data/ad_site_cleaned ./community/data/ad_site
+
+      - name: Build geosite.dat file
+        run: |
+          cd custom || exit 1
+          go run ./ --datapath=../community/data || exit 1
+
+      - name: Build GeoIP and ad_ip using xishang0128/geoip source
+        run: |
+          cd geoip-src || exit 1
+
+          # 1. 运行其官方的 asn 获取脚本
+          chmod +x asn.sh
+          ./asn.sh || exit 1
+
+          # 2. 追加标准 IP 范围数据（参考 xishang0128/geoip 官方构建流程）
+          curl -sSL https://www.gstatic.com/ipranges/goog.json | jq --raw-output '.prefixes[].ipv4Prefix,.prefixes[].ipv6Prefix | select(. != null)' >> data/google
+          curl -sSL https://www.gstatic.com/ipranges/cloud.json | jq --raw-output '.prefixes[].ipv4Prefix,.prefixes[].ipv6Prefix | select(. != null)' >> data/google
+          curl -sSL https://ip-ranges.amazonaws.com/ip-ranges.json | jq --raw-output '.prefixes[],.ipv6_prefixes[] | select(.service == "CLOUDFRONT") | .ip_prefix,.ipv6_prefix' | grep "/" >> data/cloudfront
+
+          curl -sSL http://ftp.apnic.net/stats/apnic/delegated-apnic-latest > ip.txt
+          if [ "$(cat ip.txt)" = "" ]; then
+            curl -sSL https://raw.githubusercontent.com/xishang0128/geoip/release/ip.txt > ip.txt
+          fi
+
+          cat ip.txt | awk -F '|' '/CN/&&/ipv4/ {print $4 "/" 32-log($5)/log(2)}' > data/cn
+          cat ip.txt | awk -F '|' '/CN/&&/ipv6/ {print $4 "/" $5}' >> data/cn
+          curl -sSL https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Loon/BiliBili/BiliBili_Resolve.list | grep IP-CIDR, | sed 's/IP-CIDR,//g' > data/bilibili
+          curl -sSL https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Loon/Apple/Apple_Resolve.list | grep IP-CIDR, | sed 's/IP-CIDR,//g' > data/apple
+          cat ip.txt | awk -F '|' '/JP/&&/ipv4/ {print $4 "/" 32-log($5)/log(2)}' > data/jp
+          cat ip.txt | awk -F '|' '/JP/&&/ipv6/ {print $4 "/" $5}' >> data/jp
+
+          # 3. 注入您的自定义 ad_ip 列表
+          mkdir -p data/
+          > data/ad_ip
+          curl -sSL "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/doh.txt" | \
+            grep -v '^#' | grep -v '^!' | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?' >> data/ad_ip || exit 1
+          curl -sSL "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/ips/tif.txt" | \
+            grep -v '^#' | grep -v '^!' | grep -E '([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?' >> data/ad_ip || exit 1
+          sort -u data/ad_ip > data/ad_ip_sorted
+          mv data/ad_ip_sorted data/ad_ip
+
+          # 4. 编译生成所有 geoip 文件（dat / mmdb 等）
+          go run ./ || exit 1
+
+          # 严格强校验：确保生成的 geoip.dat 存在且非空
+          [ -s "./output/dat/geoip.dat" ] || { echo "Error: geoip.dat build failed!"; exit 1; }
+
+      - name: Move and publish files
+        run: |
+          mkdir -p ./publish/
+          install -Dp ./geoip-src/output/dat/geoip.dat ./publish/ || exit 1
+          install -Dp ./custom/publish/geosite.dat ./publish/ || exit 1
+
+          cd ./publish || exit 1
+          sha256sum geoip.dat > geoip.dat.sha256sum || exit 1
+          sha256sum geosite.dat > geosite.dat.sha256sum || exit 1
+
+      - name: Delete release if exist then create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --cleanup-tag -y || true
+          gh release create latest --title "Release ${{ env.BUILDTIME }}" ./publish/* || exit 1
+
+      - name: Git push assets to release branch
+        run: |
+          cd publish || exit 1
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b release
+          git add .
+          git commit -m "Released on ${{ env.BUILDTIME }}"
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push -f -u origin release || exit 1
+
+      - name: Purge jsdelivr CDN
+        run: |
+          cd publish || exit 1
+          for file in $(ls); do
+            curl -i "https://purge.jsdelivr.net/gh/${{ github.repository }}@release/${file}" || true
+          done
+
+      - name: Delete Old Workflows
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 7
