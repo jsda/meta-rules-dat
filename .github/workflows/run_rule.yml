@@ -22,37 +22,37 @@ jobs:
         shell: bash
 
       - name: Checkout the current repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout Loyalsoldier/domain-list-custom
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Loyalsoldier/domain-list-custom
           path: custom
 
       - name: Checkout v2fly/domain-list-community
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: v2fly/domain-list-community
           path: community
 
       - name: Checkout cokebar/gfwlist2dnsmasq
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: cokebar/gfwlist2dnsmasq
           path: gfwlist2dnsmasq
 
       - name: Checkout xishang0128/geoip
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: xishang0128/geoip
           path: geoip-src
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: "1.22"
+          go-version: "1.x"
           cache-dependency-path: ./custom/go.sum
 
       - name: Generate GFWList domains
@@ -159,6 +159,9 @@ jobs:
 
       - name: Build geosite.dat file
         run: |
+          # 删除 geosite 中 category-ads 类别
+          rm -rf ./community/data/category-ads*
+
           cd custom || exit 1
           go run ./ --datapath=../community/data || exit 1
 
@@ -208,6 +211,10 @@ jobs:
           mkdir -p ./publish/
           install -Dp ./geoip-src/output/dat/geoip.dat ./publish/ || exit 1
           install -Dp ./custom/publish/geosite.dat ./publish/ || exit 1
+
+          # 提取并生成 geosite.txt 与 geoip.txt 列表
+          ls -1 ./community/data/ | sed 's/\.[^.]*$//' | sort -u > ./publish/geosite.txt
+          ls -1 ./geoip-src/data/ | sed 's/\.[^.]*$//' | sort -u > ./publish/geoip.txt
 
           cd ./publish || exit 1
           sha256sum geoip.dat > geoip.dat.sha256sum || exit 1
