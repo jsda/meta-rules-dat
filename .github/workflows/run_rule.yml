@@ -142,9 +142,7 @@ jobs:
           urls=(
             "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt"
             "https://raw.githubusercontent.com/217heidai/adblockfilters/main/rules/adblockdomain.txt"
-            "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/tif.txt"
             "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/ultimate.txt"
-            "https://raw.githubusercontent.com/ppfeufer/adguard-filter-list/master/blocklist"
             "https://raw.githubusercontent.com/badmojr/1Hosts/master/Xtra/adblock.txt"
           )
 
