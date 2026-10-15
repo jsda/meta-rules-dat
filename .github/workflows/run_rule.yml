@@ -50,9 +50,9 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.x"
+          go-version: "1.22"
           cache-dependency-path: ./custom/go.sum
 
       - name: Generate GFWList domains
@@ -159,9 +159,6 @@ jobs:
 
       - name: Build geosite.dat file
         run: |
-          # 删除 geosite 中 category-ads 类别
-          rm -rf ./community/data/category-ads*
-
           cd custom || exit 1
           go run ./ --datapath=../community/data || exit 1
 
@@ -212,13 +209,26 @@ jobs:
           install -Dp ./geoip-src/output/dat/geoip.dat ./publish/ || exit 1
           install -Dp ./custom/publish/geosite.dat ./publish/ || exit 1
 
-          # 提取并生成 geosite.txt 与 geoip.txt 列表
-          ls -1 ./community/data/ | sed 's/\.[^.]*$//' | sort -u > ./publish/geosite.txt
-          ls -1 ./geoip-src/data/ | sed 's/\.[^.]*$//' | sort -u > ./publish/geoip.txt
+          # 提取并生成 geosite.txt 与 geoip.txt 列表，并统计行数
+          for f in ./community/data/*; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            count=$(wc -l < "$f")
+            echo "$name $count"
+          done > ./publish/geosite.txt
+
+          for f in ./geoip-src/data/*; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            count=$(wc -l < "$f")
+            echo "$name $count"
+          done > ./publish/geoip.txt
 
           cd ./publish || exit 1
           sha256sum geoip.dat > geoip.dat.sha256sum || exit 1
           sha256sum geosite.dat > geosite.dat.sha256sum || exit 1
+          sha256sum geosite.txt > geosite.txt.sha256sum || exit 1
+          sha256sum geoip.txt > geoip.txt.sha256sum || exit 1
 
       - name: Delete release if exist then create release
         env:
